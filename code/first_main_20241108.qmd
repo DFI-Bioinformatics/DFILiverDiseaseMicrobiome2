@@ -1,0 +1,2320 @@
+---
+title: "Main"
+format: html
+editor: visual
+---
+
+```{r libraries-r, include=FALSE}
+
+knitr::opts_chunk$set(echo = F)
+library(tidyverse)
+library(RPostgreSQL)
+library(here)
+library(conflicted)
+library(tidytext)
+library(data.table)
+library(readxl)
+library(Biostrings)
+library(patchwork)
+library(ggbreak)
+library(gghighlight)
+library(scales)
+library(zoo)
+library(EnhancedVolcano)
+
+library(car)
+library(parallel)
+library(compositions)
+
+library(mltools)
+library(rstatix)
+library(ggpubr)
+library(ggfocus)
+library(survival)
+library(survminer)
+library(cutpointr)
+library(phyloseq)
+library(writexl)
+library(vegan)
+library(ggsurvfit)
+library(corrplot)
+library(ggmagnify)
+library(ggpmisc)
+
+library(tidytext)
+library(vroom)
+library(rsample)
+library(reticulate)
+use_condaenv("base")
+
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::rename)
+conflicts_prefer(dplyr::select)
+conflicts_prefer(plotly::layout)
+conflicts_prefer(stats::cor)
+conflicts_prefer(ggplot2::annotate)
+conflicts_prefer(dplyr::slice)
+conflicts_prefer(base::`%*%`)
+conflicts_prefer(base::cummax)
+```
+
+```{python}
+
+
+from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import RepeatedStratifiedKFold
+from sklearn.model_selection import cross_val_score
+from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import ElasticNetCV, ElasticNet
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.metrics import RocCurveDisplay, auc, roc_auc_score, roc_curve, accuracy_score, mean_squared_error
+from sklearn.inspection import permutation_importance
+from sklearn.feature_selection import VarianceThreshold
+import matplotlib.pyplot as plt
+import pandas as pd
+import numpy as np
+import xgboost as xgb
+from xgboost import XGBClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+import plotly.graph_objects as go
+from hyperopt import STATUS_OK, Trials, fmin, hp, tpe
+from xgboost import cv as xgbcv
+from sklearn.preprocessing import LabelEncoder
+import seaborn as sns
+from functools import reduce
+from scipy.stats import gmean
+
+from sklearn.base import BaseEstimator, clone
+from sklearn.utils import check_array
+from skbio.stats.composition import clr
+import warnings
+from sklearn.decomposition import PCA
+
+from scipy.stats import gmean
+from sklearn.ensemble import RandomForestClassifier
+
+
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import roc_curve
+
+from scipy import stats
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import FunctionTransformer
+
+from sklearn.inspection import permutation_importance
+from sklearn.base import clone
+
+import shap
+
+le = LabelEncoder()
+
+```
+
+```{python}
+
+
+def pca_transform(X, n_components=None, variance_threshold=0.95):
+  
+    if n_components is None:
+        pca = PCA(n_components=variance_threshold, svd_solver='full')
+    else:
+        pca = PCA(n_components=n_components, svd_solver='full')
+    
+    X_pca = pca.fit_transform(X)
+    pca_columns = [f'PC{i+1}' for i in range(X_pca.shape[1])]
+    X_pca_df = pd.DataFrame(X_pca, columns=pca_columns, index=X.index)
+    
+    return X_pca_df, pca, pca.explained_variance_ratio_
+
+
+
+
+def calculate_roc_curves(best_estimator, X_train, y_train, X_test, y_test, 
+                         n_splits=5, n_repeats=10, seed_value=333, pos_label=1):
+    
+    cv = RepeatedStratifiedKFold(n_splits=n_splits, n_repeats=n_repeats, random_state=seed_value)
+    fpr_list, tpr_list, auc_list = [], [], []
+    
+    def get_predictions(estimator, X):
+        if hasattr(estimator, "predict_proba"):
+            proba = estimator.predict_proba(X)
+            return proba[:, list(estimator.classes_).index(pos_label)]
+        else:
+            return estimator.predict(X)
+
+    
+    for i, (train_index, val_index) in enumerate(cv.split(X_train, y_train)):
+        X_fold_train, X_fold_val = X_train.iloc[train_index], X_train.iloc[val_index]
+        y_fold_train, y_fold_val = y_train[train_index], y_train[val_index]
+        
+        estimator = clone(best_estimator)
+        estimator.fit(X_fold_train, y_fold_train)
+        
+        y_fold_pred = get_predictions(estimator, X_fold_val)
+        
+        fpr, tpr, _ = roc_curve(y_fold_val, y_fold_pred, pos_label=pos_label)
+        roc_auc = auc(fpr, tpr)
+        
+        fpr_list.append(fpr)
+        tpr_list.append(tpr)
+        auc_list.append(roc_auc)
+    
+    best_estimator.fit(X_train, y_train)
+    y_test_pred = get_predictions(best_estimator, X_test)
+    fpr_test, tpr_test, _ = roc_curve(y_test, y_test_pred, pos_label=pos_label)
+    roc_auc_test = auc(fpr_test, tpr_test)
+    
+    mean_fpr = np.linspace(0, 1, 100)
+    interpolated_tprs = []
+    for i in range(len(fpr_list)):
+        interpolated_tprs.append(np.interp(mean_fpr, fpr_list[i], tpr_list[i]))
+        interpolated_tprs[-1][0] = 0.0
+    interpolated_tpr_test = np.interp(mean_fpr, fpr_test, tpr_test)
+    interpolated_tpr_test[0] = 0.0
+    
+    mean_tpr = np.mean(interpolated_tprs, axis=0)
+    mean_tpr[-1] = 1.0
+    std_tpr = np.std(interpolated_tprs, axis=0)
+    
+    roc_data = pd.DataFrame({
+        'fpr': mean_fpr,
+        'tpr_test': interpolated_tpr_test,
+        'tpr_mean': mean_tpr,
+        'tpr_std': std_tpr
+    })
+    for i in range(len(interpolated_tprs)):
+        roc_data[f'tpr_fold_{i}'] = interpolated_tprs[i]
+    
+    auc_scores = pd.DataFrame({
+        'Fold': [f'Fold {i+1}' for i in range(len(auc_list))] + ['Test Set'],
+        'AUC': auc_list + [roc_auc_test]
+    })
+    
+    return roc_data, auc_scores
+
+
+
+def pca_logistic_feature_importance(X_train_pca, y_train, X_test_pca, y_test, pca_obj, original_feature_names, model, pos_label):
+    if not hasattr(model, 'coef_'):
+        model.fit(X_train_pca, y_train)
+    
+    def calculate_importance(X_pca, y):
+        y_pred_proba = model.predict_proba(X_pca)[:, list(model.classes_).index(pos_label)]
+        coefficients = np.cov(X_pca.T, y_pred_proba)[:-1, -1]
+        feature_importance = pca_obj.components_.T.dot(coefficients)
+        return feature_importance
+    
+
+    train_importance = calculate_importance(X_train_pca, y_train)
+    test_importance = calculate_importance(X_test_pca, y_test)
+    
+    train_df = pd.DataFrame({
+        'feature': original_feature_names,
+        'importance': train_importance,
+        'type': 'Train',
+        'direction': np.where(train_importance > 0, 'Positive', 'Negative')
+    })
+    
+    test_df = pd.DataFrame({
+        'feature': original_feature_names,
+        'importance': test_importance,
+        'type': 'Test',
+        'direction': np.where(test_importance > 0, 'Positive', 'Negative')
+    })
+    
+    importance_df = pd.concat([train_df, test_df], ignore_index=True)
+    importance_df['abs_importance'] = np.abs(importance_df['importance'])
+    importance_df = importance_df.sort_values('abs_importance', ascending=False)
+    importance_df = importance_df.drop('abs_importance', axis=1)
+    
+    return importance_df
+
+```
+
+```{r functions-r}
+
+
+function_cox_model = function(df, 
+                              selected_event = "event_30day",
+                              selected_time = "time2event_30day",
+                              censor_days = 30,
+                              selected_metadata = "invSimp",
+                              selected_cutpoint = 3.94,
+                              vars = c())
+{
+  
+  df_surv = df %>% 
+    select(metabolomicsID_new, as.name(selected_event), as.name(selected_time), as.name(selected_metadata), all_of(vars))
+  
+  colnames(df_surv) = c("sample_id", "event", "time", "metadata", vars)
+  df_surv = df_surv %>% 
+    mutate(time = ifelse(time > censor_days, censor_days, time),
+           time = ifelse(is.na(time), censor_days, time)) %>% 
+    mutate(metadata = ifelse(is.na(metadata), mean(df_surv$metadata, na.rm = T), metadata))
+
+  temp = df_surv %>% 
+    mutate(metadata_binary = ifelse(metadata > selected_cutpoint, "High", "Low"))
+  
+  my.for = as.formula(paste0("Surv(time, event) ~ ", paste0(vars, collapse = " + "), " +  metadata_binary"))
+  p_cox = summary(coxph(my.for, data = temp))
+
+  df = as.data.frame(p_cox$coefficients) |> 
+    rownames_to_column('variable') |> 
+    mutate(variable = gsub('metadata_binary', selected_metadata, variable))
+  
+  return(df)
+}
+
+
+function_cox_model_binary = function(df, 
+                              selected_event = "event_30day",
+                              selected_time = "time2event_30day",
+                              censor_days = 30,
+                              selected_metadata = "invSimp",
+                              vars = c())
+{
+  
+  df_surv = df %>% 
+    select(metabolomicsID_new, as.name(selected_event), as.name(selected_time), as.name(selected_metadata), all_of(vars))
+  
+  colnames(df_surv) = c("sample_id", "event", "time", "metadata", vars)
+  df_surv = df_surv %>% 
+    mutate(time = ifelse(time > censor_days, censor_days, time),
+           time = ifelse(is.na(time), censor_days, time))
+
+  temp = df_surv %>% 
+    mutate(metadata_binary = metadata)
+  
+  my.for = as.formula(paste0("Surv(time, event) ~ ", paste0(vars, collapse = " + "), " +  metadata_binary"))
+  p_cox = summary(coxph(my.for, data = temp))
+
+  df = as.data.frame(p_cox$coefficients) |> 
+    rownames_to_column('variable') |> 
+    mutate(variable = gsub('metadata_binary', selected_metadata, variable))
+  
+  return(df)
+}
+
+
+
+
+
+
+function_plot_km = function(df, 
+                            selected_event = "event_30day",
+                            selected_time = "time2event_30day",
+                            censor_days = 30,
+                            selected_metadata = "invSimp",
+                            selected_cutpoint = 3.94,
+                            name = NULL)
+{
+  if(is.null(name)) name = paste0(str_to_title(gsub("_", " ", selected_event)), ": ", selected_metadata)
+  
+  
+  df_surv = df %>% 
+    select(metabolomicsID_new, as.name(selected_event), as.name(selected_time), as.name(selected_metadata))
+  
+  colnames(df_surv) = c("sample_id", "event", "time", "metadata")
+  df_surv = df_surv %>% 
+    mutate(time = ifelse(time > censor_days, censor_days, time),
+           time = ifelse(is.na(time), censor_days, time)) %>% 
+    mutate(metadata = ifelse(is.na(metadata), mean(df_surv$metadata, na.rm = T), metadata))
+
+  temp = df_surv %>% 
+    mutate(metadata_binary = ifelse(metadata > selected_cutpoint, "High", "Low"))
+  
+  
+  s.fit = survfit(Surv(time, event) ~ metadata_binary, data = temp) 
+  names(s.fit$strata) <- gsub("metadata_binary=", "", names(s.fit$strata))
+
+  
+  ggsurvplot(s.fit, data = temp,
+             pval = T,
+             palette = c('#0072b5', '#bc3c29'), 
+             conf.int = T,
+             risk.table = "nrisk_cumevents",
+             risk.table.y.text= F,
+             risk.table.pos = "in",
+             risk.table.fontsize = 3.5,
+             xlim = c(0, censor_days),
+             break.x.by = 10,
+             legend.title = "",
+             xlab = 'Time (days)',
+             ylab = 'Survival Probability',
+             title = name,
+             caption = paste0(selected_metadata, " cutoff = ", selected_cutpoint)) +
+    theme_ggsurvfit_default()
+  
+}
+
+
+
+function_plot_km_binary_input = function(df, 
+                                         selected_event = "death_30d", 
+                                         selected_time = "days_to_death", 
+                                         censor_days = 30, 
+                                         selected_metadata = "invSimp", 
+                                         fct_levels = c(),
+                                         name = NULL)
+{
+  
+  if(is.null(name)) name = paste0(str_to_title(gsub("_", " ", selected_event)), ": ", selected_metadata)
+  
+  df_surv = df %>% 
+    select(metabolomicsID_new, as.name(selected_event), as.name(selected_time), as.name(selected_metadata))
+
+  colnames(df_surv) = c("sample_id", "event", "time", "metadata")
+  df_surv = df_surv %>% 
+    mutate(time = ifelse(time > censor_days, censor_days, time),
+           time = ifelse(is.na(time), censor_days, time)) 
+  
+  temp = df_surv %>% 
+    mutate(metadata_binary = metadata) %>% 
+    mutate(metadata_binary = factor(metadata_binary, levels = fct_levels))
+  
+  s.fit <- survfit(Surv(time, event) ~ metadata_binary, data = temp) 
+  names(s.fit$strata) <- gsub("metadata_binary=", "", names(s.fit$strata))
+  
+  ggsurvplot(s.fit, data = temp,
+             pval = T,
+             palette = c('#0072b5', '#bc3c29'), 
+             conf.int = T,
+             risk.table = "nrisk_cumevents",
+             risk.table.y.text= F,
+             risk.table.pos = "in",
+             risk.table.fontsize = 3.5,
+             xlim = c(0, censor_days),
+             break.x.by = 10,
+             legend.title = "",
+             xlab = 'Time (days)',
+             ylab = 'Survival Probability',
+             title = name) +
+    theme_ggsurvfit_default()
+}
+
+
+
+function_find_optimal_cutpoint = function(df, 
+                                          selected_event = "death_30d", 
+                                          selected_time = "days_to_death", 
+                                          censor_days = 30, 
+                                          selected_metadata = "invSimp",
+                                          intervals)
+{
+  
+  df_surv = df %>% 
+    select(metabolomicsID_new, as.name(selected_event), as.name(selected_time), as.name(selected_metadata))
+
+  colnames(df_surv) = c("sample_id", "event", "time", "metadata")
+  df_surv = df_surv %>% 
+    mutate(time = ifelse(time > censor_days, censor_days, time),
+           time = ifelse(is.na(time), censor_days, time)) %>% 
+    mutate(metadata = ifelse(is.na(metadata), mean(df_surv$metadata, na.rm = T), metadata))
+  
+  temp_list = list()
+  i=1
+  for(selected_cutpoint in intervals)
+  {
+    temp = df_surv %>% 
+      mutate(metadata_binary = ifelse(metadata > selected_cutpoint, "High", "Low")) 
+    
+    temp_counts = temp %>% count(metadata_binary)
+    
+    num_high = as.integer(temp_counts[temp_counts$metadata_binary == "High", 2])
+    num_low = as.integer(temp_counts[temp_counts$metadata_binary == "Low", 2])
+    if(length(num_high) == 0) num_high = 0
+    if(length(num_low) == 0) num_low = 0
+    
+    
+    possible_error = tryCatch(
+        survdiff(Surv(time, event) ~ metadata_binary, data = temp),
+        error=function(e) e
+    )
+    
+    if(any(grepl("Error", possible_error)))
+    {
+      temp_list[[i]] = c(selected_cutpoint, NA, NA, num_high, num_low, possible_error$message)
+    } else {
+      
+      a = survfit(Surv(time, event) ~ metadata_binary, data = temp)
+      a = survival:::survmean(a, rmean=censor_days)[[1]][,5]
+      rmst_diff = abs(a[[1]] - a[[2]])
+      
+      temp_list[[i]] = c(selected_cutpoint, 
+                         survdiff(Surv(time, event) ~ metadata_binary, data = temp)$pvalue, 
+                         rmst_diff, num_high, num_low, NA)
+    }
+    i = i+1
+  }
+  
+  df_logrank = do.call(rbind, temp_list) %>% 
+    as.data.frame() %>% 
+    `colnames<-`(c("cutpoint", "logrank_p", "rmst_diff", "num_high", "num_low", "comment")) %>% 
+    mutate(cutpoint = as.numeric(cutpoint),
+           rmst_diff = as.numeric(rmst_diff),
+           logrank_p = as.numeric(logrank_p)) %>% 
+    arrange(cutpoint) %>% 
+    mutate(cutpoint = factor(cutpoint))
+  
+  p1 = df_logrank %>% 
+    mutate(log10p = -log10(logrank_p)) %>% 
+    ggplot(aes(x = cutpoint, y = log10p)) +
+    geom_col(fill = "#6F99ADFF", color = "black") +
+    theme_bw() +
+    #theme(axis.text.x = element_blank()) +
+    scale_x_discrete(guide = guide_axis(angle = 60)) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "red") +
+    geom_hline(yintercept = -log10(0.1), linetype = "dashed", color = "red4") +
+    annotate("text", x = Inf, y = -log10(0.05), hjust = 1, label = "p = 0.05", vjust = -0.5, size = 8/.pt) +
+    annotate("text", x = Inf, y = -log10(0.1), hjust = 1, label = "p = 0.10", vjust = -0.5, size = 8/.pt) +
+    labs(x = paste(selected_metadata, "Cutpoint"), y = "-log10 [ log-rank p-value ]")
+  
+  p2 = df_logrank %>% 
+    ggplot(aes(x = cutpoint, y = rmst_diff)) +
+    geom_col(fill = "#6F99ADFF", color = "black") +
+    theme_bw() +
+    theme(axis.text.x = element_blank()) +
+    labs(x = "", y = "RMST Difference")
+  
+  p3 = df_logrank %>% 
+    select(cutpoint, num_high, num_low) %>% 
+    pivot_longer(!cutpoint, names_to = "type", values_to = "count") %>% 
+    mutate(count = as.numeric(count)) %>% 
+    mutate(type = ifelse(type == "num_high", "High", "Low")) %>% 
+    ggplot(aes(x = cutpoint, y = count, fill = type)) +
+    geom_col(position = position_stack(), color = "black") +
+    geom_hline(yintercept = nrow(df)/2, color = "yellow", linetype = "dashed") +
+    theme_bw() +
+    theme(axis.text.x = element_blank()) +
+    scale_fill_manual(values = c("High" = "#0072b5", "Low" = "#bc3c29")) +
+    #theme(legend.position = "bottom") +
+    
+    labs(x = '', y = "Sample count", fill = selected_metadata)
+  
+  
+  name = paste0(str_to_title(gsub("_", " ", selected_event)), ": ", selected_metadata)
+  
+  p_cutpoint = (p3 / p2 / p1) + plot_annotation(title = name)
+  return(p_cutpoint)
+}
+
+
+function_km_logrankp = function(df, selected_event = "death_30d", selected_time = "days_to_death", censor_days = 30, selected_metadata = "invSimp", selected_cutpoint = 0)
+{
+  df_surv = df %>% 
+    select(metabolomicsID_new, as.name(selected_event), as.name(selected_time), as.name(selected_metadata))
+
+  colnames(df_surv) = c("sample_id", "event", "time", "metadata")
+  df_surv = df_surv %>% 
+    mutate(time = ifelse(time > censor_days, censor_days, time),
+           time = ifelse(is.na(time), censor_days, time)) %>% 
+    mutate(metadata = ifelse(is.na(metadata), mean(df_surv$metadata, na.rm = T), metadata)) %>% 
+    mutate(metadata_binary = ifelse(metadata > selected_cutpoint, "High", "Low")) 
+    
+
+  return(survdiff(Surv(time, event) ~ metadata_binary, data = df_surv)$pvalue)
+  
+}
+
+
+function_plot_roc = function(roc_data, auc_scores, title = "")
+{  
+  fold_data <- roc_data %>%
+    pivot_longer(cols = starts_with("tpr_fold_"), 
+                 names_to = "fold", 
+                 values_to = "tpr") %>%
+    mutate(fold = str_replace(fold, "tpr_fold_", "Fold "))
+  
+  
+  p = ggplot() +
+    geom_line(data = fold_data, aes(x = fpr, y = tpr, group = fold), alpha = 0.3, size = 0.4) +
+    geom_ribbon(data = roc_data, aes(x = fpr, ymin = tpr_mean - tpr_std, ymax = tpr_mean + tpr_std), 
+                fill = "grey", alpha = 0.4) +
+    geom_line(data = roc_data, aes(x = fpr, y = tpr_mean), 
+              color = "darkblue", size = .8) +
+    geom_line(data = roc_data, aes(x = fpr, y = tpr_test), color = "darkgreen", size = .8) 
+    geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "black", size = 0.5) +
+    labs(x = "False Positive Rate", y = "True Positive Rate", title = title) +
+    
+    annotate("text", x = 0.99, y = c(0.07, 0.03),
+             label = c(paste("Mean AUC =", round(mean(auc_scores$AUC[auc_scores$Fold != "Test Set"]), 2)),
+                       paste("Test AUC =", round(auc_scores$AUC[auc_scores$Fold == "Test Set"], 2))),
+             color = c("darkblue", "darkgreen"),
+             hjust = 1, vjust = 0, size = 3.5) +
+    theme_classic() +
+    theme(legend.position = "none")
+  
+  return(p)
+}
+
+```
+
+```{r}
+
+color_hd = "#20854e"
+color_chronic = "#7876b1"
+color_cirrd = "#e18727"
+color_cirrc = "#0072b5"
+color_aclf = "#bc3c29"
+
+
+color_alive = "#0072b5"
+color_deceased = "#bc3c29"
+
+
+disease_stage_color_mapping = c("Chronic" = color_chronic, 
+                                "ACLF" = color_aclf, 
+                                "Cirrhosis (Decompensated)" = color_cirrd,
+                                "Cirrhosis (Compensated)" = color_cirrc, 
+                                "Healthy" = color_hd)
+
+disease_stage_levels = c("Chronic", "ACLF", "Cirrhosis (Decompensated)", "Cirrhosis (Compensated)", "Healthy")
+
+```
+
+```{r}
+
+alphadiv_cutoff = 4
+butyrate_cutoff = 2500
+dca_cutoff = 40
+seed_value = 333
+
+```
+
+# Read Collated Data
+
+```{r}
+
+df_genes_bile = readRDS(here('data', 'first_genes_bile.rds'))
+df_genes_but = readRDS(here('data', 'first_genes_but.rds'))
+df_meta = readRDS(here('data', 'first_meta.rds'))
+df_meta_hd = readRDS(here('data', 'first_meta_hd.rds'))
+df_meta_ld = readRDS(here('data', 'first_meta_ld.rds'))
+df_meta_micu = readRDS(here('data', 'first_meta_micu.rds'))
+df_mp = readRDS(here('data', 'first_mp.rds'))
+df_mp_micu = readRDS(here('data', 'first_mp_micu.rds'))
+df_quant = readRDS(here('data', 'first_metabolomics_quant.rds'))
+ncbi_tax_dump = readRDS(here('data', 'ncbi_tax_dump.rds'))
+
+df_meta = df_meta %>% 
+  mutate(butyrate_group = ifelse(butyrate_rapid < butyrate_cutoff, 'Low', 'High'),
+         dca_group = ifelse(dca_rapid < dca_cutoff, 'Low', 'High')) |> 
+  mutate(butyrate_dca_group = case_when(
+    butyrate_group == "Low" & dca_group == "Low" ~ "Butyrate ↓ DCA ↓",
+    butyrate_group == "High" & dca_group == "High" ~ "Butyrate ↑ DCA ↑",
+    butyrate_group == "High" & dca_group == "Low" ~ "Butyrate ↑ DCA ↓",
+    butyrate_group == "Low" & dca_group == "High" ~ "Butyrate ↓ DCA ↑",
+    T ~ NA))
+
+
+```
+
+# Figure 1
+
+```{r}
+
+source(here("R_scripts", "getRdpPal.R"))
+taxpalm = getRdpPal(df_mp)
+
+# Tax
+p_tax = df_mp %>%
+  arrange(Kingdom, Phylum, Class, Order, Family, Genus, genLab) %>%
+
+  group_by(seq_id) %>%
+  arrange(Genus) %>%
+  ungroup() %>%
+
+  left_join(df_meta %>% select(seq_id, disease_stage, invSimp)) %>% 
+  mutate(seq_id = reorder_within(seq_id, invSimp, disease_stage)) %>% 
+
+  ggplot(aes(x = seq_id, y = pctseqs)) +
+  geom_bar(aes(fill = Genus), stat = "identity") +
+  scale_fill_manual(values = taxpalm) +
+  labs(y = "MetaPhlAn4 RA", x = "") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  scale_x_reordered(guide = guide_axis(angle = 90)) +
+  facet_grid(~disease_stage, scales = "free_x", space = "free_x", labeller = label_wrap_gen(width=20)) +
+  scale_y_continuous(limits=c(0, 1), expand = c(0, 0))
+
+
+
+```
+
+```{r}
+
+# Alpha Diversity Column chart
+
+p_alphadiv_col = df_meta %>% 
+  mutate(seq_id = reorder_within(seq_id, invSimp, disease_stage)) %>% 
+
+  ggplot(aes(x = seq_id, y = invSimp)) +
+  geom_col() +
+  theme_bw() +
+  scale_x_reordered(guide = guide_axis(angle = 90)) +
+  facet_grid(~disease_stage, scales = "free_x", space = "free_x") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        strip.text.x = element_blank(),
+        plot.margin = unit(c(0.1,0.1,0.1,0.1), "cm")) +
+  labs(x = "", y = "Inv. Simpson")
+
+```
+
+```{r}
+
+# MELD Score Column chart
+
+p_meld_col = df_meta %>% 
+  mutate(seq_id = reorder_within(seq_id, invSimp, disease_stage)) %>% 
+  mutate(meld_na = ifelse(grepl("DFI", seq_id), 0, meld_na)) %>% 
+  ggplot(aes(x = seq_id, y = meld_na)) +
+  geom_col() +
+  theme_bw() +
+  scale_x_reordered(guide = guide_axis(angle = 90)) +
+  facet_grid(~disease_stage, scales = "free_x", space = "free_x") +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        strip.text.x = element_blank(),
+        plot.margin = unit(c(0.1,0.1,0.1,0.1), "cm")) +
+  labs(x = "", y = "MELD Score (with Na)")
+
+```
+
+```{r}
+
+# Alpha Diversity Disease Stage
+
+p_alphadiv_dis = df_meta %>% 
+  ggplot(aes(disease_stage, invSimp, color = disease_stage)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(alpha = 0.65) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  scale_x_discrete(guide = guide_axis(angle = 60)) +
+  scale_color_manual(values = disease_stage_color_mapping) +
+  stat_compare_means(comparisons = list(c("ACLF", "Chronic"), 
+                                        c("ACLF", "Cirrhosis (Compensated)"), 
+                                        c("ACLF", "Cirrhosis (Decompensated)"),
+                                        c("ACLF", "Healthy")),
+                     method = "wilcox.test", size = 2.5, label = "p.signif") +
+  labs(x = "", y = "Inv. Simpson", title = "Alpha Diversity (Disease Stage)")
+
+```
+
+```{r}
+
+# Alpha Diversity Survival
+
+p_alphadiv_surv = df_meta %>% 
+  mutate(death_transplant_30d = ifelse(death_transplant_30d == T, 'Deceased/Transplant', 'Alive')) |> 
+  mutate(death_transplant_30d = factor(death_transplant_30d, levels = c('Alive', 'Deceased/Transplant'))) |> 
+  ggplot(aes(death_transplant_30d, invSimp, color = death_transplant_30d)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(alpha = 0.65) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  #scale_x_discrete(guide = guide_axis(angle = 60)) +
+  scale_color_manual(values = c(color_alive, color_deceased)) +
+  stat_compare_means(method = "wilcox.test", size = 4.5, label = "p.signif") +
+  labs(x = "", y = "Inv. Simpson", title = "Alpha Diversity (Survival 30d Death/Transplant)")
+
+
+```
+
+```{r}
+
+p_surv = function_plot_km(df_meta |> filter(!grepl("DFI", seq_id)), 
+                          selected_event = "death_transplant_30d",
+                          selected_time = "days_to_death_transplant",
+                          censor_days = 30,
+                          selected_metadata = "invSimp",
+                          selected_cutpoint = alphadiv_cutoff,
+                          name = 'Alpha Diversity')
+
+```
+
+```{r}
+
+p_surv_dc = function_plot_km(df_meta |> 
+                               filter(!grepl("DFI", seq_id)) |> 
+                               filter(disease_stage == 'Cirrhosis (Decompensated)'), 
+                             selected_event = "death_transplant_30d",
+                             selected_time = "days_to_death_transplant",
+                             censor_days = 30,
+                             selected_metadata = "invSimp",
+                             selected_cutpoint = alphadiv_cutoff,
+                             name = 'Alpha Diversity: Cirrhosis (Decompensated)')
+
+```
+
+```{r}
+
+cairo_pdf(here("outputs", paste0("Fig1_", format(Sys.Date(), "%Y%m%d"), ".pdf")), height= 15, width = 25, onefile = T)
+
+(p_tax / p_alphadiv_col / p_meld_col / (p_alphadiv_dis | p_alphadiv_surv)) + 
+  plot_layout(guide = "collect", heights = c(10, 4, 4, 10),
+              design = 
+                "AAAAAA
+                 BBBBBB
+                 CCCCCC
+                 DDD###")
+dev.off()
+
+```
+
+```{r}
+
+cairo_pdf(here("outputs", paste0("Fig1_km_", format(Sys.Date(), "%Y%m%d"), ".pdf")), onefile = T)
+p_surv
+p_surv_dc
+dev.off()
+
+```
+
+# S1: Optimal Cutoff for Alpha Diversity
+
+```{r}
+
+df_km = df_meta |> 
+  filter(disease_stage != 'Healthy') |> 
+  mutate(invsimp_group = ifelse(invSimp >= alphadiv_cutoff, "High", "Low"))
+
+n_iter = 1000
+boot = bootstraps(df_km, times = n_iter, strata = invsimp_group)
+temp_list = list()
+for(i in 1:n_iter)
+{
+  temp = as.data.frame(boot$splits[[i]])
+  p_val = function_km_logrankp(temp, 
+                               selected_event = "death_transplant_30d", 
+                               selected_time = "days_to_death_transplant", 
+                               censor_days = 30, 
+                               selected_metadata = "invSimp", 
+                               selected_cutpoint = alphadiv_cutoff)
+  temp_list[[i]] = c(i, p_val)
+}
+
+p1 = do.call(rbind, temp_list) %>% 
+  `colnames<-`(c("iteration", "logrank_p")) %>%  
+  ggplot(aes(x = logrank_p)) +
+  geom_histogram(bins = 100) +
+  geom_vline(xintercept = 0.05, color = "red") +
+  theme_bw() +
+  scale_x_continuous(breaks = c(0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8)) +
+  labs(x = "log-rank p-value", y = "Count", title = paste0(n_iter, " iterations of bootstrapping (Alpha Diversity)"))
+
+do.call(rbind, temp_list) |> 
+  `colnames<-`(c("iteration", "logrank_p")) |> 
+  as.data.frame() |> 
+  mutate(cat = ifelse(logrank_p <=0.05, '<=0.05', '>0.05')) |> 
+  count(cat)
+
+
+```
+
+```{r}
+
+cairo_pdf(here("outputs", paste0("FigS1A_", format(Sys.Date(), "%Y%m%d"), ".pdf")), onefile = T, height = 10, width = 13)
+
+function_find_optimal_cutpoint(df_km, 
+                               selected_event = "death_transplant_30d", 
+                               selected_time = "days_to_death_transplant", 
+                               censor_days = 30, 
+                               selected_metadata = "invSimp", 
+                               seq(min(df_meta$invSimp), max(df_meta$invSimp)))
+dev.off()
+
+
+cairo_pdf(here("outputs", paste0("FigS1B_", format(Sys.Date(), "%Y%m%d"), ".pdf")), onefile = T, height = 10, width = 13)
+p1
+dev.off()
+
+```
+
+# S2: Choosing Metabolites
+
+```{r}
+
+selected_bile_compounds = c("chenodeoxycholic acid", "glycochenodeoxycholic acid", "taurochenodeoxycholic acid", 
+                            "cholic acid", "glycocholic acid", "taurocholic acid", "deoxycholic acid", 
+                            "lithocholic acid", "isodeoxycholic acid", "3-oxolithocholic acid", "alloisolithocholic acid")
+
+
+compound_levels = c("glycocholic acid", "taurocholic acid", "glycochenodeoxycholic acid", "taurochenodeoxycholic acid", 
+                    "cholic acid", "chenodeoxycholic acid", "deoxycholic acid", "lithocholic acid", "isodeoxycholic acid", 
+                    "3-oxolithocholic acid", "alloisolithocholic acid", "acetate", "butyrate", "propionate")
+
+```
+
+```{r}
+
+p_met_alphadiv1 = df_quant %>% 
+  filter(metabolomicsID_new %in% df_meta_ld$metabolomicsID_new) %>% 
+  filter(ms_type == "quant") %>% 
+  filter(hmmf_panel == "BileAcid") %>% 
+  select(metabolomicsID_new, compound, value_um) %>% 
+  filter(compound %in% selected_bile_compounds) %>%
+  mutate(compound = factor(compound, levels = compound_levels)) |> 
+  left_join(df_meta |> select(metabolomicsID_new, death_transplant_30d, invSimp)) |> 
+  mutate(invSimp_group = ifelse(invSimp >= alphadiv_cutoff, 'High', 'Low')) |> 
+  ggplot(aes(invSimp_group, value_um, color = invSimp_group)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(alpha = 0.65) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  facet_wrap(~compound, scales = 'free_y', ncol = 3) +
+  scale_color_manual(values = c('High' = color_alive, 'Low' = color_deceased)) +
+  stat_compare_means(method = "wilcox.test", size = 2.5, vjust = 1) +
+  scale_y_continuous(trans=scales::pseudo_log_trans(base = 10), breaks = log_breaks_custom, labels = label_comma()) +
+  labs(x = "", y = "Concentration uM", title = "Alpha Diversity (Bile-acids)")
+
+
+p_met_alphadiv2 = df_quant %>% 
+  filter(metabolomicsID_new %in% df_meta_ld$metabolomicsID_new) %>% 
+  filter(ms_type == "quant") %>% 
+  filter(hmmf_panel == "PFBBr") %>% 
+  select(metabolomicsID_new, compound, value_um) %>% 
+  filter(grepl("acetate|butyrate|propionate", compound)) %>%
+  mutate(compound = factor(compound, levels = compound_levels)) |> 
+  left_join(df_meta |> select(metabolomicsID_new, death_transplant_30d, invSimp)) |> 
+  mutate(invSimp_group = ifelse(invSimp >= alphadiv_cutoff, 'High', 'Low')) |> 
+  ggplot(aes(invSimp_group, value_um, color = invSimp_group)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(alpha = 0.65) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  facet_wrap(~compound, scales = 'free_y', ncol = 3) +
+  scale_y_continuous(labels = label_comma()) +
+  scale_color_manual(values = c('High' = color_alive, 'Low' = color_deceased)) +
+  stat_compare_means(method = "wilcox.test", size = 2.5, vjust = 1) +
+  labs(x = "", y = "Concentration uM", title = "Alpha Diversity (SCFA)")
+
+
+```
+
+```{r}
+
+p_met_surv1 = df_quant %>% 
+  filter(metabolomicsID_new %in% df_meta_ld$metabolomicsID_new) %>% 
+  filter(ms_type == "quant") %>% 
+  filter(hmmf_panel == "BileAcid") %>% 
+  select(metabolomicsID_new, compound, value_um) %>% 
+  filter(compound %in% selected_bile_compounds) %>%
+  mutate(compound = factor(compound, levels = compound_levels)) |> 
+  left_join(df_meta |> select(metabolomicsID_new, death_transplant_30d)) |> 
+  mutate(death_transplant_30d = ifelse(death_transplant_30d == T, 'Deceased/Transplant', 'Alive')) |> 
+  mutate(death_transplant_30d = factor(death_transplant_30d, levels = c('Alive', 'Deceased/Transplant'))) |> 
+  
+  ggplot(aes(death_transplant_30d, value_um, color = death_transplant_30d)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(alpha = 0.65) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  
+  scale_y_continuous(trans=scales::pseudo_log_trans(base = 10), breaks = log_breaks_custom, labels = label_comma()) +
+  facet_wrap(~compound, scales = 'free_y', ncol = 3) +
+  scale_color_manual(values = c(color_alive, color_deceased)) +
+  stat_compare_means(method = "wilcox.test", size = 2.5, vjust = 1) +
+  labs(x = "", y = "Concentration uM", title = "30d Death/Transplant (Bile-acids)")
+
+p_met_surv2 = df_quant %>% 
+  filter(metabolomicsID_new %in% df_meta_ld$metabolomicsID_new) %>% 
+  filter(ms_type == "quant") %>% 
+  filter(hmmf_panel == "PFBBr") %>% 
+  select(metabolomicsID_new, compound, value_um) %>% 
+  filter(grepl("acetate|butyrate|propionate", compound)) %>%
+  mutate(compound = factor(compound, levels = compound_levels)) |> 
+  left_join(df_meta |> select(metabolomicsID_new, death_transplant_30d)) |> 
+  mutate(death_transplant_30d = ifelse(death_transplant_30d == T, 'Deceased/Transplant', 'Alive')) |> 
+  mutate(death_transplant_30d = factor(death_transplant_30d, levels = c('Alive', 'Deceased/Transplant'))) |> 
+  
+  ggplot(aes(death_transplant_30d, value_um, color = death_transplant_30d)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(alpha = 0.65) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  facet_wrap(~compound, scales = 'free_y', ncol = 3) +
+  scale_y_continuous(labels = label_comma()) +
+  scale_color_manual(values = c(color_alive, color_deceased)) +
+  stat_compare_means(method = "wilcox.test", size = 2.5, vjust = 1) +
+  labs(x = "", y = "Concentration uM", title = "30d Death/Transplant (SCFA)")
+
+
+```
+
+```{r}
+
+cairo_pdf(here("outputs", paste0("FigS2_", format(Sys.Date(), "%Y%m%d"), ".pdf")), height= 12, width = 12, onefile = T)
+(p_met_alphadiv1 / p_met_alphadiv2) + plot_layout(heights = c(4.2, 1))
+(p_met_surv1 / p_met_surv2) + plot_layout(heights = c(4.2, 1))
+dev.off()
+
+```
+
+## 
+
+# Cox Models
+
+```{r}
+
+
+write.csv(function_cox_model(df_meta |> 
+                               filter(!grepl("DFI", seq_id)), 
+                             selected_event = "death_transplant_30d",
+                             selected_time = "days_to_death_transplant",
+                             censor_days = 30,
+                             selected_metadata = "invSimp",
+                             selected_cutpoint = alphadiv_cutoff,
+                             vars = c('age', 'sex', 'meld_na')),
+          here('outputs', paste0("cox-model_alphadiv_", format(Sys.Date(), "%Y%m%d"), ".csv")), row.names = F)
+
+
+write.csv(function_cox_model(df_meta |> 
+                               filter(!grepl("DFI", seq_id)) |> 
+                               filter(disease_stage == 'Cirrhosis (Decompensated)'), 
+                             selected_event = "death_transplant_30d",
+                             selected_time = "days_to_death_transplant",
+                             censor_days = 30,
+                             selected_metadata = "invSimp",
+                             selected_cutpoint = alphadiv_cutoff,
+                             vars = c('age', 'sex', 'meld_na')),
+          here('outputs', paste0("cox-model_alphadiv_cd_", format(Sys.Date(), "%Y%m%d"), ".csv")), row.names = F)
+
+
+write.csv(function_cox_model(df_meta |> 
+                               filter(!grepl("DFI", seq_id)),
+                             selected_event = "death_transplant_30d",
+                             selected_time = "days_to_death_transplant",
+                             censor_days = 30,
+                             selected_metadata = "butyrate",
+                             selected_cutpoint = butyrate_cutoff,
+                             vars = c('age', 'sex', 'meld_na')),
+          here('outputs', paste0("cox-model_but_", format(Sys.Date(), "%Y%m%d"), ".csv")), row.names = F)
+
+
+write.csv(function_cox_model(df_meta |> 
+                               filter(!grepl("DFI", seq_id)) |> 
+                               filter(disease_stage == 'Cirrhosis (Decompensated)'), 
+                             selected_event = "death_transplant_30d",
+                             selected_time = "days_to_death_transplant",
+                             censor_days = 30,
+                             selected_metadata = "butyrate",
+                             selected_cutpoint = butyrate_cutoff,
+                             vars = c('age', 'sex', 'meld_na')),
+          here('outputs', paste0("cox-model_but_cd_", format(Sys.Date(), "%Y%m%d"), ".csv")), row.names = F)
+
+
+write.csv(function_cox_model(df_meta |> 
+                               filter(!grepl("DFI", seq_id)),
+                             selected_event = "death_transplant_30d",
+                             selected_time = "days_to_death_transplant",
+                             censor_days = 30,
+                             selected_metadata = "dca",
+                             selected_cutpoint = dca_cutoff,
+                             vars = c('age', 'sex', 'meld_na')),
+          here('outputs', paste0("cox-model_dca_", format(Sys.Date(), "%Y%m%d"), ".csv")), row.names = F)
+
+
+write.csv(function_cox_model(df_meta |> 
+                               filter(!grepl("DFI", seq_id)) |> 
+                               filter(disease_stage == 'Cirrhosis (Decompensated)'), 
+                             selected_event = "death_transplant_30d",
+                             selected_time = "days_to_death_transplant",
+                             censor_days = 30,
+                             selected_metadata = "dca",
+                             selected_cutpoint = dca_cutoff,
+                             vars = c('age', 'sex', 'meld_na')),
+          here('outputs', paste0("cox-model_dca_cd_", format(Sys.Date(), "%Y%m%d"), ".csv")), row.names = F)
+
+
+
+
+
+
+write.csv(function_cox_model_binary(df_meta |> 
+                               filter(butyrate_dca_group == "Butyrate ↓ DCA ↓" | butyrate_dca_group == "Butyrate ↑ DCA ↑") |> 
+                               filter(!grepl("DFI", seq_id)),
+                             selected_event = "death_transplant_30d",
+                             selected_time = "days_to_death_transplant",
+                             censor_days = 30,
+                             selected_metadata = "butyrate_dca_group",
+                             vars = c('age', 'sex', 'meld_na')),
+          here('outputs', paste0("cox-model_butyrate_dca_group_hhll_", format(Sys.Date(), "%Y%m%d"), ".csv")), row.names = F)
+
+
+write.csv(function_cox_model_binary(df_meta |> 
+                               filter(!grepl("DFI", seq_id)) |> 
+                               filter(butyrate_dca_group == "Butyrate ↓ DCA ↓" | butyrate_dca_group == "Butyrate ↑ DCA ↑") |> 
+                               filter(disease_stage == 'Cirrhosis (Decompensated)'), 
+                             selected_event = "death_transplant_30d",
+                             selected_time = "days_to_death_transplant",
+                             censor_days = 30,
+                             selected_metadata = "butyrate_dca_group",
+                             vars = c('age', 'sex', 'meld_na')),
+          here('outputs', paste0("cox-model_butyrate_dca_group_hhll_cd_", format(Sys.Date(), "%Y%m%d"), ".csv")), row.names = F)
+
+
+
+
+
+
+```
+
+# F2
+
+```{r}
+
+mat = df_quant %>% 
+  filter(metabolomicsID_new %in% df_meta_ld$metabolomicsID_new) %>% 
+  filter(ms_type == "quant") %>% 
+  filter(hmmf_panel == "BileAcid" | hmmf_panel == "PFBBr") %>% 
+  select(metabolomicsID_new, compound, value_um) %>% 
+  filter(grepl("acetate|butyrate|propionate", compound) | compound %in% selected_bile_compounds) %>%
+  arrange(factor(compound, levels = compound_levels)) %>% 
+  pivot_wider(id_cols = metabolomicsID_new, names_from = compound, values_from = value_um, values_fill = 0) %>% 
+  left_join(df_meta_ld %>% select(metabolomicsID_new, invSimp), by = "metabolomicsID_new") %>% 
+  column_to_rownames("metabolomicsID_new") %>% 
+  as.matrix()
+
+pval = psych::corr.test(mat, adjust="BH")$p
+
+mat_pearson_s = cor(mat, method = "pearson")
+mat_spearman_s = cor(mat, method = "spearman")
+
+
+```
+
+```{r}
+
+df_met_alphadiv = df_quant %>% 
+  filter(metabolomicsID_new %in% df_meta_ld$metabolomicsID_new) %>% 
+  filter(ms_type == "quant") %>% 
+  filter(hmmf_panel == "BileAcid" | hmmf_panel == "PFBBr") %>% 
+  select(metabolomicsID_new, compound, value_um) %>% 
+  filter(compound %in% selected_bile_compounds | grepl("acetate|butyrate|propionate", compound)) %>%
+  mutate(compound = factor(compound, levels = compound_levels)) |> 
+  left_join(df_meta |> select(metabolomicsID_new, death_transplant_30d, invSimp)) |> 
+  mutate(invSimp_group = ifelse(invSimp >= alphadiv_cutoff, 'High', 'Low'))
+
+
+df_volcano = df_met_alphadiv |>
+  group_by(invSimp_group, compound) |> 
+  summarize(avg = mean(value_um)) |> 
+  mutate(avg = if_else(avg == 0, 0.0001, avg)) |> 
+  spread(invSimp_group, avg) |> 
+  mutate(log2fc = log2(`High`/`Low`)) |> 
+  left_join(df_met_alphadiv |>
+              group_by(compound) |> 
+              wilcox_test(value_um ~ invSimp_group) |>  
+              mutate(p.adj = p.adjust(p, method = "BH"))
+            )
+  
+  
+set.seed(seed_value)
+
+xylims = ceiling(max(df_volcano$log2fc, na.rm = T))
+plims <- ceiling(max(-log10(df_volcano$p.adj), na.rm = T))
+
+p_volcano = 
+  EnhancedVolcano(df_volcano,
+                  lab = df_volcano$compound,
+                  title = 'FDR corrected: Alpha Diversity',
+                  y = "p.adj",
+                  x = "log2fc",
+                  pCutoff = 0.05,
+                  FCcutoff = 1,
+                  pointSize = 3.0,
+                  labSize = 2.5,
+                  xlim = c(-xylims,xylims),
+                  ylim = c(0, plims + 1),
+                  col=paletteer::paletteer_d("ggthemes::fivethirtyeight")[c(3,2,5,4)],
+                  colAlpha = 0.65,
+                  legendPosition = "right",
+                  legendLabels = c("NS",
+                                   "NS",
+                                   expression(p > 0.05*";" ~ Log[2] ~ FC >= "\u00B1"*1),
+                                   expression(p <= 0.05*";" ~ Log[2] ~ FC >= "\u00B1"*1)),
+                  legendLabSize = 14,
+                  drawConnectors = T,
+                  widthConnectors = 0.25,
+                  maxoverlapsConnectors = Inf,
+                  arrowheads = F,
+                  gridlines.minor = F,
+                  gridlines.major = F) +
+  labs(subtitle = "",
+       y = expression( -Log[10] ~ P.adj)) +
+  annotate("text", x = 0.95*xylims, y = plims + 0.95, label = "High",
+           size = 6, color = ggsci::pal_igv("default")(2)[2]) +
+  annotate("rect", xmin = 1.05, xmax = Inf, ymin = -log(0.05, base = 10),
+           ymax = Inf,
+           alpha = .1, fill = ggsci::pal_igv("default")(2)[2]) +
+  annotate("text", x = -0.95*xylims, y = plims + 0.95, label = "Low",
+           size = 6, color = ggsci::pal_igv("default")(2)[1]) +
+  annotate("rect", xmin = -1.05, xmax = -Inf, ymin = -log(0.05, base = 10),
+           ymax = Inf,
+           alpha = .1, fill = ggsci::pal_igv("default")(2)[1]) +
+  guides(color = guide_legend(nrow = 4),
+         shape = guide_legend(nrow = 4))
+
+
+
+
+```
+
+```{r fig.height=6, fig.width=10}
+
+cairo_pdf(here("outputs", paste0("Fig2_", format(Sys.Date(), "%Y%m%d"), ".pdf")), height = 6, width = 10, onefile = T)
+
+p_volcano
+
+corrplot(mat_spearman_s,
+         method = 'circle',
+         type = "upper", 
+         diag = F, 
+         p.mat=pval, 
+         insig = "label_sig", 
+         sig.level = 0.05, 
+         tl.srt = 60, 
+         tl.col = "black", 
+         order = "original")
+
+dev.off()
+
+```
+
+# F3
+
+## Butyrate
+
+```{r}
+
+# Butyrate
+p_but_col = df_meta %>% 
+  mutate(metabolomicsID_new = reorder_within(metabolomicsID_new, butyrate_rapid, disease_stage)) %>% 
+  ggplot(aes(x = metabolomicsID_new, y = butyrate_rapid)) +
+  geom_col(fill = "grey60") +
+  geom_hline(yintercept = 1.9, linetype = "dashed", color = "red") +
+  
+  theme_bw() +
+  scale_x_reordered(guide = guide_axis(angle = 90)) +
+  scale_y_continuous(limits = c(1, 100000), trans='log10', labels = label_comma(), breaks = c(10, 100, 1000, 10000, 100000)) +
+  facet_grid(~disease_stage, scales = "free_x", space = "free_x", labeller = label_wrap_gen(width=20)) +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.margin = unit(c(0.1,0.1,0.1,0.1), "cm")) +
+  labs(x = "", y = "Butyrate Conc. (μM)")
+
+
+
+p_but_genes_hm = df_genes_but %>% 
+  select(seq_id, gene, tpm) %>% 
+  filter(seq_id %in% df_meta$seq_id) %>% 
+  fill(gene) %>% 
+  mutate(tpm = ifelse(is.na(tpm), 0, tpm)) %>% 
+  
+  pivot_wider(id_cols = seq_id, names_from = gene, values_from = tpm, values_fill = 0) %>% 
+  pivot_longer(!seq_id, names_to = "gene", values_to = "tpm") %>% 
+  
+  mutate(tpm_log10 = log(tpm, base = 10), 
+         tpm_log10 = ifelse(is.infinite(tpm_log10), 0, tpm_log10)) %>% 
+  
+  filter(seq_id %in% df_meta$seq_id) %>% 
+  left_join(df_meta %>% select(seq_id, metabolomicsID_new, disease_stage, butyrate)) %>% 
+
+  mutate(metabolomicsID_new = reorder_within(metabolomicsID_new, butyrate, disease_stage)) %>% 
+  ggplot(aes(x = metabolomicsID_new, y = gene, fill = tpm_log10)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "white", mid= "cyan1", high = "#0c0970",
+                       midpoint = 3.5, breaks = seq(1, 7, by = 1),
+                       labels = scales::label_math(), limits = c(0, 7)) +
+  guides(fill = guide_legend(reverse = TRUE))+
+  theme_bw() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  scale_x_reordered(guide = guide_axis(angle = 90)) +
+  facet_grid(~disease_stage, scales = "free_x", space = "free_x") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        #strip.background = element_blank(),
+        #strip.text.x = element_blank(),
+        plot.margin = unit(c(0.1,0.1,0.1,0.1), "cm")) +
+  labs(x = "", y = "Butyrate Genes", fill = "CoPM")
+
+
+df_pathways_but1 = df_genes_but %>% 
+  select(seq_id, gene, tpm) %>% 
+  right_join(df_meta %>% select(seq_id, metabolomicsID_new)) %>% 
+  fill(gene) %>% 
+  mutate(tpm = ifelse(is.na(tpm), 0, tpm)) %>% 
+  pivot_wider(id_cols = metabolomicsID_new, names_from = gene, values_from = tpm, values_fill = 0) %>% 
+  pivot_longer(!metabolomicsID_new, names_to = "gene", values_to = "tpm") %>% 
+  
+  mutate(gene = case_when(gene %in% c("etfA", "bcd") ~ "bcd-etfA",
+                          gene %in% c("etfB", "bcd") ~ "bcd-etfB",
+                                 gene %in% c("gctA", "gctB") ~ "gctAB",
+                                 gene %in% c("hgCoAdA", "hgCoAdB", "hgCoAdC") ~ "hgCoAdABC",
+                                 gene %in% c("gcdA", "gcdB") ~ "gcdAB",
+                                 gene %in% c("kamD", "kamE") ~ "kamDE",
+                                 gene %in% c("atoA", "atoD") ~ "atoAD",
+                                 gene %in% c("ptb", "buk") ~ "ptb-buk",
+                                 TRUE ~ gene)) %>% 
+  group_by(metabolomicsID_new, gene) %>% 
+  summarise(tpm = sum(tpm)) %>% 
+  mutate(`Acetyl CoA: Path 1` = ifelse(gene %in% c("thl", "bhbd", "cro", "bcd-etfA", "but"), 1, 0),
+         `Acetyl CoA: Path 2` = ifelse(gene %in% c("thl", "bhbd", "cro", "bcd-etfB", "but"), 1, 0),
+         `Acetyl CoA: Path 3` = ifelse(gene %in% c("thl", "bhbd", "cro", "bcd-etfA", "ptb-buk"), 1, 0),
+         `Acetyl CoA: Path 4` = ifelse(gene %in% c("thl", "bhbd", "cro", "bcd-etfB", "ptb-buk"), 1, 0),
+         `Lysine: Path 1` = ifelse(gene %in% c("kamA", "kamDE", "kdd", "kce", "kal", "bcd-etfA", "but"), 1, 0),
+         `Lysine: Path 2` = ifelse(gene %in% c("kamA", "kamDE", "kdd", "kce", "kal", "bcd-etfB", "but"), 1, 0),
+         `Lysine: Path 3` = ifelse(gene %in% c("kamA", "kamDE", "kdd", "kce", "kal", "bcd-etfA", "ptb-buk"), 1, 0),
+         `Lysine: Path 4` = ifelse(gene %in% c("kamA", "kamDE", "kdd", "kce", "kal", "bcd-etfB", "ptb-buk"), 1, 0),
+         `Lysine: Path 5` = ifelse(gene %in% c("kamA", "kamDE", "kdd", "kce", "kal", "bcd-etfA", "atoAD"), 1, 0),
+         `Lysine: Path 6` = ifelse(gene %in% c("kamA", "kamDE", "kdd", "kce", "kal", "bcd-etfB", "atoAD"), 1, 0),
+         `Glutarate: Path 1` = ifelse(gene %in% c("gctAB", "hgCoAdABC", "gcdAB", "bcd-etfA", "but"), 1, 0),
+         `Glutarate: Path 2` = ifelse(gene %in% c("gctAB", "hgCoAdABC", "gcdAB", "bcd-etfB", "but"), 1, 0),
+         `Glutarate: Path 3` = ifelse(gene %in% c("gctAB", "hgCoAdABC", "gcdAB", "bcd-etfA", "ptb-buk"), 1, 0),
+         `Glutarate: Path 4` = ifelse(gene %in% c("gctAB", "hgCoAdABC", "gcdAB", "bcd-etfB", "ptb-buk"), 1, 0),
+         `4-Aminobutyrate: Path 1` = ifelse(gene %in% c("abfH", "4hbt", "abfD", "bcd-etfAB", "but"), 1, 0),
+         `4-Aminobutyrate: Path 2` = ifelse(gene %in% c("abfH", "4hbt", "abfD", "bcd-etfB", "but"), 1, 0),
+         `4-Aminobutyrate: Path 3` = ifelse(gene %in% c("abfH", "4hbt", "abfD", "bcd-etfAB", "ptb-buk"), 1, 0),
+         `4-Aminobutyrate: Path 4` = ifelse(gene %in% c("abfH", "4hbt", "abfD", "bcd-etfB", "ptb-buk"), 1, 0)
+         ) %>% 
+  pivot_longer(cols = !(metabolomicsID_new:tpm) , names_to = "pathway", values_to = "pathway_abundance") %>% 
+  filter(pathway_abundance != 0) %>% 
+  group_by(metabolomicsID_new, pathway) %>% 
+  mutate(max_presence = sum(pathway_abundance),
+         gene_presence = ifelse(tpm > 0, 1, 0),
+         completeness = sum(gene_presence),
+         completeness_pct = completeness / max_presence) %>% 
+  mutate(pathway_abv = str_extract(string = pathway, pattern = ".+(?=:)")) %>% 
+  group_by(metabolomicsID_new, pathway_abv) %>% 
+  dplyr::slice_max(completeness_pct, with_ties = FALSE) %>% 
+  ungroup() %>% 
+  mutate(pathway_abv = factor(pathway_abv, levels = c("Acetyl CoA", "Lysine", "Glutarate", "4-Aminobutyrate")))
+  
+df_pathways_but2 = df_pathways_but1 %>% 
+  group_by(metabolomicsID_new, pathway_abv) %>% 
+  slice_max(completeness_pct, with_ties = F) %>% 
+  mutate(pathway_abv = "Overall Completeness") %>%
+  ungroup() %>% 
+  distinct(metabolomicsID_new, .keep_all = T)
+  
+p_pathways_but = rbind(df_pathways_but1, df_pathways_but2) %>% 
+ right_join(df_meta %>% select(seq_id, metabolomicsID_new, disease_stage, butyrate)) %>% 
+  mutate(metabolomicsID_new = reorder_within(metabolomicsID_new, butyrate, disease_stage)) %>% 
+  ggplot(aes(x = metabolomicsID_new, y = completeness_pct, fill = pathway_abv)) +
+  geom_col(position = "stack") +
+  theme_bw() +
+  theme(
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        plot.background = element_blank(),
+        panel.border = element_rect(colour = "black",
+                          fill = NA,
+                          linewidth = 0.5), 
+        strip.text.x = element_blank(),
+        strip.background = element_blank(),
+        axis.line = element_line(color = "black"),
+        legend.position = "right"
+  ) +
+  scale_x_reordered(guide = guide_axis(angle = 90)) +
+  facet_grid(pathway_abv~disease_stage, scales = "free", space = "free") +
+  paletteer::scale_fill_paletteer_d("ggsci::default_nejm") +
+  scale_y_continuous(labels = scales::percent) +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  labs(x = "", y = "Butyrate Pathway Completeness", fill = "Butyrate Pathway")
+
+
+
+p_pathways_but_overall = rbind(df_pathways_but1, df_pathways_but2) %>%
+  right_join(df_meta %>% select(seq_id, metabolomicsID_new, disease_stage, butyrate)) %>% 
+  mutate(metabolomicsID_new = reorder_within(metabolomicsID_new, butyrate, disease_stage)) %>% 
+  filter(pathway_abv == "Overall Completeness") %>% 
+  ggplot(aes(x = metabolomicsID_new, y = completeness_pct, fill = pathway_abv)) +
+  geom_col(position = "stack", fill = "#7876B1FF") +
+  theme_bw() +
+  theme(
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        plot.background = element_blank(),
+        panel.border = element_rect(colour = "black",
+                          fill = NA,
+                          linewidth = 0.5), 
+        strip.text.x = element_blank(),
+        strip.background = element_blank(),
+        axis.line = element_line(color = "black"),
+        legend.position = "right"
+  ) +
+  scale_x_reordered(guide = guide_axis(angle = 90)) +
+  facet_grid(pathway_abv~disease_stage, scales = "free", space = "free") +
+  scale_y_continuous(labels = scales::percent) +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  labs(x = "", y = "Butyrate Pathway Completeness")
+
+
+p_pathway_box = rbind(df_pathways_but1, df_pathways_but2) %>% 
+  right_join(df_meta %>% select(seq_id, metabolomicsID_new, disease_stage, butyrate)) %>% 
+  mutate(metabolomicsID_new = reorder_within(metabolomicsID_new, butyrate, disease_stage)) %>% 
+  filter(pathway_abv == "Overall Completeness") %>% 
+  mutate(complete = ifelse(completeness_pct == 1, "Complete", "Incomplete")) %>% 
+  select(metabolomicsID_new, complete, disease_stage) %>% 
+  group_by(disease_stage) %>% 
+  count(complete) %>% 
+  mutate(pct = n/sum(n)) %>% 
+  ungroup() %>% 
+  mutate(complete = factor(complete, levels = c("Incomplete", "Complete"))) %>% 
+  ggplot(aes(x = disease_stage, y = pct, fill = complete, label = n)) +
+  geom_col(position = "stack") +
+  geom_text(size = 3, position = position_stack(vjust = 0.5), color = "white") +
+  theme_bw() +
+  theme(legend.position = "none") +
+  scale_fill_manual(values = c("#bc3c29", "#20854e" )) +
+  scale_x_discrete(guide = guide_axis(angle = 60)) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "", y = "% of Samples (Pathway Completeness)", fill = "Pathway completion")
+
+
+```
+
+```{r}
+
+p_dca_col = df_meta %>% 
+  mutate(metabolomicsID_new = reorder_within(metabolomicsID_new, dca_rapid, disease_stage)) %>% 
+  ggplot(aes(x = metabolomicsID_new, y = dca_rapid)) +
+  geom_col(fill = "grey60") +
+  geom_hline(yintercept = 0.0682, linetype = "dashed", color = "red") +
+  theme_bw() +
+  scale_x_reordered(guide = guide_axis(angle = 90)) +
+  scale_y_continuous(limits = c(1, 10000), trans='log10', labels = label_comma(), breaks = c(10, 100, 1000, 10000)) +
+  facet_grid(~disease_stage, scales = "free_x", space = "free_x", labeller = label_wrap_gen(width=20)) +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.margin = unit(c(0.1,0.1,0.1,0.1), "cm")) +
+  labs(x = "", y = "DCA Conc. (μM)")
+
+
+df_bile_genes_hm = df_genes_bile %>% 
+  select(seq_id, gene, tpm) %>% 
+  right_join(df_meta %>% select(seq_id)) %>% 
+  fill(gene) %>% 
+  mutate(tpm = ifelse(is.na(tpm), 0, tpm)) %>% 
+  
+  pivot_wider(id_cols = seq_id, names_from = gene, values_from = tpm, values_fill = 0) %>% 
+  pivot_longer(!seq_id, names_to = "gene", values_to = "tpm") %>% 
+  
+  mutate(tpm_log10 = log(tpm, base = 10), 
+         tpm_log10 = ifelse(is.infinite(tpm_log10), 0, tpm_log10)) %>% 
+  
+  filter(seq_id %in% df_meta$seq_id) %>% 
+  left_join(df_meta %>% select(seq_id, metabolomicsID_new, disease_stage, dca)) %>% 
+
+  mutate(metabolomicsID_new = reorder_within(metabolomicsID_new, dca, disease_stage))
+
+
+
+p_bile_genes_hm = df_bile_genes_hm %>% 
+  ggplot(aes(x = metabolomicsID_new, y = gene, fill = tpm_log10)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "white", mid= "cyan1", high = "#0c0970",
+                       midpoint = 3.5, breaks = seq(1, 7, by = 1),
+                       labels = scales::label_math(), limits = c(0, 7)) +
+  guides(fill = guide_legend(reverse = TRUE))+
+  theme_bw() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  scale_x_reordered(guide = guide_axis(angle = 90)) +
+  facet_grid(~disease_stage, scales = "free_x", space = "free_x") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        strip.text.x = element_blank(),
+        plot.margin = unit(c(0.1,0.1,0.1,0.1), "cm")) +
+  labs(x = "", y = "Bile-acid Genes", fill = "CoPM")
+
+
+p_bile_genes_bai = df_bile_genes_hm %>% 
+  filter(grepl('Bai', gene)) |> 
+  mutate(count = ifelse(tpm_log10 == 0, 0, 1)) |> 
+  group_by(metabolomicsID_new, disease_stage) |> 
+  summarize(count = sum(count)) |>
+  mutate(pct = count/13*100,
+         gene = 'Bai Operon') |>
+
+  ggplot(aes(x = metabolomicsID_new, y = gene, fill = pct)) +
+  geom_tile() +
+  guides(fill = guide_legend(reverse = TRUE))+
+  theme_bw() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  scale_fill_gradient(low = 'white', high = 'darkred', breaks = breaks_pretty()) +
+  scale_x_reordered(guide = guide_axis(angle = 90)) +
+  facet_grid(~disease_stage, scales = "free_x", space = "free_x") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        strip.text.x = element_blank(),
+        plot.margin = unit(c(0.1,0.1,0.1,0.1), "cm")) +
+  labs(x = "", y = "", fill = "Bai Genes Presence %")
+
+p_bile_genes_other = df_bile_genes_hm %>% 
+  filter(!grepl('Bai', gene)) |> 
+  ggplot(aes(x = metabolomicsID_new, y = gene, fill = tpm_log10)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "white", mid= "cyan1", high = "#0c0970",
+                       midpoint = 3.5, breaks = seq(1, 7, by = 1),
+                       labels = scales::label_math(), limits = c(0, 7)) +
+  guides(fill = guide_legend(reverse = TRUE))+
+  theme_bw() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  scale_x_reordered(guide = guide_axis(angle = 90)) +
+  facet_grid(~disease_stage, scales = "free_x", space = "free_x") +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        strip.text.x = element_blank(),
+        plot.margin = unit(c(0.1,0.1,0.1,0.1), "cm")) +
+  labs(x = "", y = "", fill = "CoPM")
+
+
+
+```
+
+## DCA
+
+```{r}
+
+p_box_but = df_meta %>% 
+  mutate(butyrate = ifelse(butyrate < 0, 0, butyrate)) %>% 
+  ggplot(aes(disease_stage, butyrate, color = disease_stage)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(alpha = 0.65) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  scale_color_manual(values = disease_stage_color_mapping) +
+  scale_x_discrete(guide = guide_axis(angle = 60)) +
+  scale_y_continuous(limits = c(1, 10000000), trans='log10', labels = label_comma(), breaks = c(10, 100, 1000, 10000, 100000)) +
+  stat_compare_means(comparisons = list(c("ACLF", "Chronic"),
+                                        c("ACLF", "Cirrhosis (Compensated)"),
+                                        c("ACLF", "Cirrhosis (Decompensated)"),
+                                        c("ACLF", "Healthy")),
+                     method = "wilcox.test", size = 2.5, label = "p.signif") +
+  labs(x = "", y = "Butyrate Conc. (μM)")
+
+p_box_dca = df_meta %>% 
+  mutate(dca = ifelse(dca < 0, 0, dca)) %>% 
+  ggplot(aes(disease_stage, dca, color = disease_stage)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(alpha = 0.65) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  scale_color_manual(values = disease_stage_color_mapping) +
+  scale_x_discrete(guide = guide_axis(angle = 60)) +
+  scale_y_continuous(limits = c(1, 10000000), trans='log10', labels = label_comma(), breaks = c(10, 100, 1000, 10000)) +
+  stat_compare_means(comparisons = list(c("ACLF", "Chronic"), 
+                                        c("ACLF", "Cirrhosis (Compensated)"), 
+                                        c("ACLF", "Cirrhosis (Decompensated)"),
+                                        c("ACLF", "Healthy")),
+                     method = "wilcox.test", size = 2.5, label = "p.signif") +
+  labs(x = "", y = "DCA Conc. (μM)")
+
+
+
+```
+
+```{r}
+
+cairo_pdf(here("outputs", paste0("Fig3_", format(Sys.Date(), "%Y%m%d"), ".pdf")), height= 14, width = 20)
+(p_but_col / p_pathways_but_overall / p_dca_col / p_bile_genes_bai / p_bile_genes_other / (p_box_but | p_box_dca)) + 
+  plot_layout(guide = "collect", heights = c(10, 6, 10, 1, 7, 10),
+              design = "
+              AAAAAAAA
+              BBBBBBBB
+              CCCCCCCC
+              DDDDDDDD
+              EEEEEEEE
+              FFFF####")
+dev.off()
+
+
+```
+
+# S3: Standard vs. Rapid Correlation
+
+```{r}
+
+cairo_pdf(here("outputs", paste0("FigS3_", format(Sys.Date(), "%Y%m%d"), ".pdf")), height= 12, width = 12, onefile = T)
+
+df_meta |> 
+  ggplot(aes(x = butyrate, y = butyrate_rapid)) +
+  geom_point() +
+  #geom_smooth(method = "lm", formula = y ~ x, se=F, color = 'red') + 
+  stat_poly_line(formula = y ~ x + 0, se=F, color = 'red') +
+  stat_poly_eq(use_label("eq"), formula = y ~ x + 0) +
+  stat_poly_eq(label.y = 0.85) +
+
+  geom_magnify(from = c(xmin = 0, xmax = 10000, ymin = 0, ymax = 10000), 
+               to = c(xmin = 30000, xmax = 60000, ymin = 0, ymax = 15000),
+               recompute = TRUE) +
+  theme_bw() +
+  labs(x = 'Butyrate (µM)', y = 'Butyrate Rapid (µM)')
+  
+
+df_meta |> 
+  ggplot(aes(x = dca, y = dca_rapid)) +
+  geom_point() +
+  #geom_smooth(method = "lm", formula = y ~ x, se=F, color = 'red') + 
+  stat_poly_line(formula = y ~ x + 0, se=F, color = 'red') +
+  stat_poly_eq(use_label("eq"), formula = y ~ x + 0) +
+  stat_poly_eq(label.y = 0.85) +
+
+  geom_magnify(from = c(xmin = 0, xmax = 1000, ymin = 0, ymax = 1000), 
+               to = c(xmin = 3000, xmax = 5500, ymin = 0, ymax = 2500),
+               recompute = TRUE) +
+  theme_bw() +
+  labs(x = 'DCA (µM)', y = 'DCA Rapid (µM)')
+
+dev.off()
+
+```
+
+# S4: Butyrate Genes & Pathways
+
+```{r}
+
+p_pathway_genes_hm = read_excel(here('data', 'but_pathways.xlsx')) |> 
+  pivot_longer(!pathway, names_to = 'name', values_to = 'gene') |> 
+  filter(!is.na(gene)) |> 
+  select(-name) |> 
+  mutate(presence = 1) |> 
+  pivot_wider(id_cols = pathway, names_from = gene, values_from = presence, values_fill = 0) |> 
+  pivot_longer(!pathway, names_to = 'gene', values_to = 'presence') |> 
+  separate(pathway, into = c('pathway', 'path'), sep = ': ') |> 
+  mutate(pathway = factor(pathway, levels = c('Acetyl CoA', 'Lysine', 'Glutarate', '4-Aminobutyrate'))) |> 
+  #mutate(presence = ifelse(presence == 1, 'Present', 'Absent')) |> 
+  mutate(presence_group = case_when(
+    presence == 1 & grepl('Acetyl CoA', pathway) ~ 'Acetyl CoA',
+    presence == 1 & grepl('Lysine', pathway) ~ 'Lysine',
+    presence == 1 & grepl('Glutarate', pathway) ~ 'Glutarate',
+    presence == 1 & grepl('4-Aminobutyrate', pathway) ~ '4-Aminobutyrate',
+    presence == 0 ~ 'Absent')
+  ) |>
+  
+  ggplot(aes(x = path, y = gene, fill = presence_group)) +
+  geom_tile(color = 'black') +
+  theme_bw() +
+  theme(legend.position = 'none') +
+  scale_x_discrete(guide = guide_axis(angle = 60)) +
+  scale_fill_manual(values = c('Acetyl CoA' = '#BC3C29FF', 
+                               'Lysine' = '#0072B5FF', 
+                               'Glutarate' = '#E18727FF', 
+                               '4-Aminobutyrate' = '#20854EFF',
+                               'Absent' = 'white')) +
+  facet_grid(.~pathway, space = 'free_x', scales = 'free_x') +
+  labs(x = '', y = '')
+
+
+```
+
+```{r}
+
+cairo_pdf(here("outputs", paste0("FigS4_", format(Sys.Date(), "%Y%m%d"), ".pdf")), height= 20, width = 30)
+((p_pathway_genes_hm | p_pathway_box) / p_but_genes_hm / p_pathways_but) + 
+  plot_layout(guide = "collect", heights = c(13, 16, 8),
+              design = "
+              AAAAAAAA
+              BBBBBBBB
+              CCCCCCCC
+              ")
+dev.off()
+
+
+
+```
+
+# Supplemental 5: Optimal Cutoffs for Butyrate and DCA
+
+```{r}
+
+df_km = df_meta |> 
+  filter(disease_stage != 'Healthy') |> 
+  mutate(butyrate_group = ifelse(butyrate >= butyrate_cutoff, "High", "Low"))
+
+n_iter = 1000
+set.seed(seed_value)
+boot = bootstraps(df_km, times = n_iter, strata = butyrate_group)
+temp_list = list()
+for(i in 1:n_iter)
+{
+  temp = as.data.frame(boot$splits[[i]])
+  p_val = function_km_logrankp(temp, selected_event = "death_transplant_30d", selected_time = "days_to_death_transplant", censor_days = 30, 
+                               selected_metadata = "butyrate", selected_cutpoint = butyrate_cutoff)
+  temp_list[[i]] = c(i, p_val)
+}
+
+p2 = do.call(rbind, temp_list) %>% 
+  `colnames<-`(c("iteration", "logrank_p")) |> 
+  ggplot(aes(x = logrank_p)) +
+  geom_histogram(bins = 100) +
+  geom_vline(xintercept = 0.05, color = "red") +
+  theme_bw() +
+  labs(x = "log-rank p-value", y = "Count", title = paste0(n_iter, " iterations of bootstrapping (Butyrate)"))
+
+do.call(rbind, temp_list) |> 
+  `colnames<-`(c("iteration", "logrank_p")) |> 
+  as.data.frame() |> 
+  mutate(cat = ifelse(logrank_p <=0.05, '<=0.05', '>0.05')) |> 
+  count(cat)
+
+
+```
+
+```{r}
+
+df_km = df_meta |> 
+  filter(disease_stage != 'Healthy') |> 
+  mutate(dca_group = ifelse(dca >= dca_cutoff, "High", "Low"))
+
+n_iter = 1000
+set.seed(seed_value)
+boot = bootstraps(df_km, times = n_iter, strata = dca_group)
+temp_list = list()
+for(i in 1:n_iter)
+{
+  temp = as.data.frame(boot$splits[[i]])
+  p_val = function_km_logrankp(temp, 
+                               selected_event = "death_transplant_30d", 
+                               selected_time = "days_to_death_transplant", 
+                               censor_days = 30, 
+                               selected_metadata = "dca", 
+                               selected_cutpoint = dca_cutoff)
+  temp_list[[i]] = c(i, p_val)
+}
+
+p3 = do.call(rbind, temp_list) %>% 
+  `colnames<-`(c("iteration", "logrank_p")) |> 
+  ggplot(aes(x = logrank_p)) +
+  geom_histogram(bins = 100) +
+  geom_vline(xintercept = 0.05, color = "red") +
+  theme_bw() +
+  labs(x = "log-rank p-value", y = "Count", title = paste0(n_iter, " iterations of bootstrapping (DCA)"))
+
+do.call(rbind, temp_list) |> 
+  `colnames<-`(c("iteration", "logrank_p")) |> 
+  as.data.frame() |> 
+  mutate(cat = ifelse(logrank_p <=0.05, '<=0.05', '>0.05')) |> 
+  count(cat)
+
+
+```
+
+```{r}
+
+cairo_pdf(here("outputs", paste0("FigS5A_", format(Sys.Date(), "%Y%m%d"), ".pdf")), onefile = T, height = 10, width = 13)
+function_find_optimal_cutpoint(df_km, 
+                               selected_event = "death_transplant_30d", 
+                               selected_time = "days_to_death_transplant", 
+                               censor_days = 30, 
+                               selected_metadata = "butyrate", 
+                               seq(0, 10000, by = 100))
+
+
+function_find_optimal_cutpoint(df_km, 
+                               selected_event = "death_transplant_30d", 
+                               selected_time = "days_to_death_transplant", 
+                               censor_days = 30, 
+                               selected_metadata = "dca", 
+                               seq(0, 1000, by = 10))
+
+dev.off()
+
+
+cairo_pdf(here("outputs", paste0("FigS5B_", format(Sys.Date(), "%Y%m%d"), ".pdf")), onefile = T, height = 10, width = 13)
+p2
+p3
+dev.off()
+
+
+```
+
+```{r}
+
+cairo_pdf(here("outputs", paste0("FigS5_", format(Sys.Date(), "%Y%m%d"), ".pdf")), height= 10, width = 20)
+(p_dca_col / p_bile_genes_hm) + 
+  plot_layout(guide = "collect", heights = c(10, 13),
+              design = "
+              AAAAAAAA
+              BBBBBBBB
+              ")
+dev.off()
+
+
+```
+
+# F5: Survival
+
+```{r}
+
+p_but_box_surv = df_meta |> 
+  mutate(death_transplant_30d = ifelse(death_transplant_30d == T, 'Deceased', 'Survived'),
+         death_transplant_30d = factor(death_transplant_30d, levels = c('Survived', 'Deceased'))) |> 
+  ggplot(aes(death_transplant_30d, butyrate, color = death_transplant_30d)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(alpha = 0.65) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  scale_y_continuous(labels = label_comma()) +
+  scale_color_manual(values = c(color_alive, color_deceased)) +
+  stat_compare_means(method = "wilcox.test", size = 2.5, vjust = 1) +
+  labs(x = "", y = "Concentration µM", title = "30d Death/Transplant (Butyrate)")
+
+p_dca_box_surv = df_meta |> 
+  mutate(death_transplant_30d = ifelse(death_transplant_30d == T, 'Deceased', 'Survived'),
+         death_transplant_30d = factor(death_transplant_30d, levels = c('Survived', 'Deceased'))) |> 
+  ggplot(aes(death_transplant_30d, dca, color = death_transplant_30d)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(alpha = 0.65) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  
+  scale_y_continuous(trans=scales::pseudo_log_trans(base = 10), breaks = log_breaks_custom, labels = label_comma()) +
+  scale_color_manual(values = c(color_alive, color_deceased)) +
+  stat_compare_means(method = "wilcox.test", size = 2.5, vjust = 1) +
+  labs(x = "", y = "Concentration µM", title = "30d Death/Transplant (DCA)")
+
+p_meld_box_surv = df_meta |> 
+  mutate(death_transplant_30d = ifelse(death_transplant_30d == T, 'Deceased', 'Survived'),
+         death_transplant_30d = factor(death_transplant_30d, levels = c('Survived', 'Deceased'))) |> 
+  ggplot(aes(death_transplant_30d, meld_na, color = death_transplant_30d)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(alpha = 0.65) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  
+  #scale_y_continuous(trans=scales::pseudo_log_trans(base = 10), breaks = log_breaks_custom, labels = label_comma()) +
+  scale_color_manual(values = c(color_alive, color_deceased)) +
+  stat_compare_means(method = "wilcox.test", size = 2.5, vjust = 1) +
+  labs(x = "", y = "MELD-Na", title = "30d Death/Transplant (MELD-Na)")
+
+
+```
+
+```{r}
+
+cairo_pdf(here("outputs", paste0("Fig5A_", format(Sys.Date(), "%Y%m%d"), ".pdf")), onefile = T, height=4, width=10)
+p_but_box_surv | p_dca_box_surv | p_meld_box_surv
+dev.off()
+
+```
+
+```{r}
+
+p_surv1 = function_plot_km_binary_input(df_meta |> 
+                            filter(!grepl("DFI", seq_id)) |> 
+                            filter(butyrate_dca_group == "Butyrate ↓ DCA ↓" | butyrate_dca_group == "Butyrate ↑ DCA ↑"), 
+                          selected_event = "death_transplant_30d",
+                          selected_time = "days_to_death_transplant",
+                          censor_days = 30,
+                          selected_metadata = "butyrate_dca_group",
+                          fct_levels = c("Butyrate ↑ DCA ↑",  "Butyrate ↓ DCA ↓"),
+                          name = 'Butyrate & DCA Groups')
+
+p_surv2 = function_plot_km_binary_input(df_meta |> 
+                                          filter(!grepl("DFI", seq_id)) |> 
+                                          mutate(butyrate_dca_group = ifelse(butyrate_dca_group == "Butyrate ↓ DCA ↓",
+                                                                             "Butyrate ↓ DCA ↓", "Remaining")), 
+                          selected_event = "death_transplant_30d",
+                          selected_time = "days_to_death_transplant",
+                          censor_days = 30,
+                          selected_metadata = "butyrate_dca_group",
+                          fct_levels = c("Remaining",  "Butyrate ↓ DCA ↓"),
+                          name = 'Butyrate & DCA Groups')
+
+p_surv3 = function_plot_km_binary_input(df_meta |> 
+                                          filter(!grepl("DFI", seq_id)) |> 
+                                          mutate(butyrate_dca_group = ifelse(butyrate_dca_group == "Butyrate ↑ DCA ↑",
+                                                                             "Butyrate ↑ DCA ↑", "Remaining")), 
+                          selected_event = "death_transplant_30d",
+                          selected_time = "days_to_death_transplant",
+                          censor_days = 30,
+                          selected_metadata = "butyrate_dca_group",
+                          fct_levels = c("Butyrate ↑ DCA ↑",  "Remaining"),
+                          name = 'Butyrate & DCA Groups')
+
+
+```
+
+```{r}
+
+pdf(here("outputs", paste0("Fig5B_", format(Sys.Date(), "%Y%m%d"), ".pdf")), onefile = T, height=6, width=8)
+p_surv1
+p_surv2
+p_surv3
+dev.off()
+
+
+```
+
+# F6: Microbiome Metabolome Correlation
+
+```{r}
+
+df_meta |> 
+  group_by(butyrate_dca_group) |> 
+  count() |> 
+  ggplot(aes(x = butyrate_dca_group, y = n)) +
+  geom_col() +
+  theme_bw() +
+  labs(x = '', y = '# Samples')
+
+```
+
+## Pre-processing
+
+```{r}
+
+target_var = "target_var"
+
+df_meta_ml = df_meta |> 
+  filter(butyrate_dca_group == "Butyrate ↓ DCA ↓" | butyrate_dca_group == "Butyrate ↑ DCA ↑") |> 
+  mutate(target_var = butyrate_dca_group)
+
+X = df_mp %>% 
+  filter(seq_id %in% df_meta_ml$seq_id) %>%
+  select(seq_id, species_mp, pctseqs) %>%
+  group_by(seq_id, species_mp) %>% 
+  summarize(pctseqs = sum(pctseqs)) %>% 
+  ungroup() %>% 
+  pivot_wider(id_cols = seq_id, names_from = species_mp, values_from = pctseqs, values_fill = 0) %>% 
+  column_to_rownames("seq_id") %>% 
+  as.matrix()
+
+df_meta_ml = df_meta_ml |> 
+  filter(seq_id %in% rownames(X))
+
+X = X[df_meta_ml$seq_id,]
+
+Y = df_meta_ml[[target_var]]
+cols = colnames(X)
+rows = rownames(X)
+
+
+```
+
+```{python}
+
+X = pd.DataFrame(r.X)
+y = np.array(r.Y)
+
+X.columns = r.cols
+X.index = r.rows
+
+```
+
+```{python}
+
+n_repeats = 2
+n_splits = 5
+seed_value = 333
+test_proportion = 0.2
+pos_label = 'Butyrate ↑ DCA ↑'
+
+X, pca, _ = pca_transform(X, n_components=None, variance_threshold=0.95)
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size = test_proportion, random_state = seed_value, stratify=y)
+cv = RepeatedStratifiedKFold(n_splits = n_splits, n_repeats = n_repeats, random_state = seed_value)
+
+```
+
+## Logistic Regression
+
+```{python}
+
+
+model = LogisticRegression(max_iter=10000)
+
+param_grid = [    
+    {'penalty': [None],
+     'solver': ['lbfgs', 'newton-cg', 'sag', 'saga']},
+    {'penalty': ['l2'],
+     'C': [0.001, 0.01, 0.1, 1, 10, 100, 1000],
+     'solver': ['lbfgs', 'newton-cg', 'sag', 'saga']},
+    {'penalty': ['l1'],
+     'C': [0.001, 0.01, 0.1, 1, 10, 100, 1000],
+     'solver': ['liblinear', 'saga']},
+    {'penalty': ['elasticnet'],
+     'C': [0.001, 0.01, 0.1, 1, 10, 100, 1000],
+     'solver': ['saga'],
+     'l1_ratio': [0.25, 0.5, 0.75]}
+]
+
+classifier_tune = GridSearchCV(model, param_grid=param_grid, cv=cv, verbose=1, n_jobs=-1, 
+                               scoring=['accuracy', 'roc_auc'], refit='roc_auc')
+
+best = classifier_tune.fit(X_train, y_train)
+results = pd.DataFrame(best.cv_results_)
+best_estimator = best.best_estimator_
+print(f'Best parameters: {best.best_params_}')
+
+# Make predictions on the test set
+y_pred = best.predict(X_test)
+y_pred_proba = best.predict_proba(X_test)[:, 1]
+
+# Calculate ROC AUC
+roc_auc = roc_auc_score(y_test, y_pred_proba)
+print(f'ROC AUC: {roc_auc:.3f}')
+
+# Calculate Accuracy
+accuracy = accuracy_score(y_test, y_pred)
+print(f'Accuracy: {accuracy:.3f}')
+
+
+```
+
+```{python}
+
+df_roc_log, auc_scores_log = calculate_roc_curves(best_estimator, X_train, y_train, X_test, y_test, 
+                                            pos_label='Butyrate ↑ DCA ↑')
+
+```
+
+```{r}
+
+cairo_pdf(here("outputs", paste0("Fig6A_", format(Sys.Date(), "%Y%m%d"), ".pdf")), onefile = T, height=6, width=8)
+function_plot_roc(py$df_roc_log, py$auc_scores_log, title = "Ridge Regression with PCA")
+dev.off()
+
+```
+
+```{python}
+
+df_importance_log = pca_logistic_feature_importance(X_train, y_train, X_test, y_test, 
+                                                pca, list(r.cols), best_estimator, pos_label=pos_label)
+
+```
+
+```{r fig.height=6, fig.width=7}
+
+selected_features = py$df_importance_log |> 
+  mutate(imp_abs = abs(importance)) |>
+  filter(type == 'Train') |> 
+  group_by(direction) |> 
+  slice_max(imp_abs, n = 20, with_ties = F) |> 
+  arrange(importance) |> 
+  pull(feature)
+  
+  
+p = py$df_importance_log |> 
+  filter(feature %in% selected_features) |> 
+  arrange(importance) |> 
+  mutate(feature = factor(feature, levels = selected_features)) |>  
+  ggplot(aes(x = feature, y = importance, fill = type)) +
+  geom_col(position = position_dodge2(preserve = 'single')) +
+  scale_fill_manual(values = c("Train" = "darkblue", "Test" = "darkgreen")) +
+  scale_x_discrete(guide = guide_axis(angle = 60)) +
+  theme_bw() +
+  labs(x = '', y = 'Importance', fill = '')
+
+p
+```
+
+```{r}
+
+cairo_pdf(here("outputs", paste0("Fig6B_", format(Sys.Date(), "%Y%m%d"), ".pdf")), onefile = T, height=10, width=10)
+p
+dev.off()
+
+
+```
+
+```{r}
+
+
+order_var = df_meta %>% 
+  mutate(butyrate_rapid = ifelse(butyrate_rapid<1, 1, butyrate_rapid)) |> 
+  arrange(butyrate_rapid) |> 
+  pull(metabolomicsID_new)
+
+p_but_col = df_meta %>% 
+  mutate(butyrate_rapid = ifelse(butyrate_rapid<1, 1, butyrate_rapid)) |> 
+  mutate(metabolomicsID_new = factor(metabolomicsID_new, levels = order_var)) |> 
+  ggplot(aes(x = metabolomicsID_new, y = butyrate_rapid)) +
+  geom_col(fill = "grey60") +
+  geom_hline(yintercept = 1.9, linetype = "dashed", color = "red") +
+  
+  theme_bw() +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_y_continuous(limits = c(1, 100000), trans='log10', labels = label_comma(), breaks = c(10, 100, 1000, 10000, 100000)) +
+
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.margin = unit(c(0.1,0.1,0.1,0.1), "cm")) +
+  labs(x = "", y = "Butyrate Conc. (μM)")
+
+
+
+
+p_mp_selected = df_mp |> 
+  filter(species_mp %in% selected_features) |> 
+  select(seq_id, species_mp, pctseqs) |> 
+  pivot_wider(id_cols = seq_id, names_from = species_mp, values_from = pctseqs, values_fill = 0) |> 
+  pivot_longer(!seq_id, names_to = 'species_mp', values_to = 'pctseqs') |> 
+  filter(seq_id %in% df_meta$seq_id) |> 
+  left_join(df_meta %>% select(seq_id, metabolomicsID_new, disease_stage, butyrate)) |> 
+  
+  mutate(species_mp = factor(species_mp, levels = selected_features)) |> 
+  
+  mutate(ra_group = case_when(
+    pctseqs == 0 ~ '0%',
+    pctseqs > 0 & pctseqs <= 0.001 ~ '0% - 0.1%',
+    pctseqs > 0.001 & pctseqs <= 0.01 ~ '0.1% - 1%',
+    pctseqs > 0.01 & pctseqs <= 0.1 ~ '1% - 10%',
+    pctseqs > 0.1 & pctseqs <= 1 ~ '10% - 100%',
+    T ~ NA
+    )) |> 
+  mutate(ra_group = factor(ra_group, levels = c('0%', '0% - 0.1%', '0.1% - 1%', '1% - 10%', '10% - 100%'))) |> 
+  
+  mutate(metabolomicsID_new = factor(metabolomicsID_new, levels = order_var)) |> 
+  
+  ggplot(aes(x = metabolomicsID_new, y = species_mp, fill = ra_group)) +
+  geom_tile() +
+  theme_bw() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) +
+  scale_x_discrete(guide = guide_axis(angle = 90)) +
+  scale_fill_manual(values = c(
+    '0%' = 'white',
+    '0% - 0.1%' ='yellow',
+    '0.1% - 1%' = 'orange',
+    '1% - 10%' = 'darkred',
+    '10% - 100%' = 'black'
+    )) +
+  # scale_fill_gradient(high = 'darkred', low = 'white') +
+  #facet_grid(~disease_stage, scales = "free_x", space = "free_x") +
+  labs(x = '', y = '', fill = '') +
+  theme(legend.position = 'bottom')
+  
+
+```
+
+```{r}
+
+cairo_pdf(here("outputs", paste0("Fig6C_", format(Sys.Date(), "%Y%m%d"), ".pdf")), onefile = T, height=10, width=20)
+(p_but_col / p_mp_selected)
+dev.off()
+
+```
+
+# MICU Cohort Validation
+
+```{r}
+
+df_meta_micu = df_meta_micu |> 
+  mutate(butyrate_group = ifelse(butyrate < butyrate_cutoff, 'Low', 'High'),
+         dca_group = ifelse(dca < dca_cutoff, 'Low', 'High')) |> 
+  mutate(butyrate_dca_group = case_when(
+    butyrate_group == "Low" & dca_group == "Low" ~ "Butyrate ↓ DCA ↓",
+    butyrate_group == "High" & dca_group == "High" ~ "Butyrate ↑ DCA ↑",
+    butyrate_group == "High" & dca_group == "Low" ~ "Butyrate ↑ DCA ↓",
+    butyrate_group == "Low" & dca_group == "High" ~ "Butyrate ↓ DCA ↑",
+    T ~ NA)) 
+
+
+
+```
+
+```{r}
+
+
+temp = df_meta_micu |>  
+  filter(butyrate_dca_group == "Butyrate ↓ DCA ↓" | butyrate_dca_group == "Butyrate ↑ DCA ↑")
+
+p_surv = function_plot_km_binary_input(temp,
+                          selected_event = "death_30d",
+                          selected_time = "days_until_death_overall",
+                          censor_days = 30,
+                          selected_metadata = "butyrate_dca_group",
+                          fct_levels = c("Butyrate ↑ DCA ↑",  "Butyrate ↓ DCA ↓"),
+                          name = 'Butyrate & DCA Groups - MICU Cohort')
+
+
+
+```
+
+```{r}
+
+cairo_pdf(here("outputs", paste0("Fig7A_", format(Sys.Date(), "%Y%m%d"), ".pdf")), onefile = T, height=4, width=6)
+p_surv
+dev.off()
+
+```
+
+```{r}
+
+#target_var = "butyrate_dca_group"
+
+df_meta_ml = df_meta_micu |> 
+  filter(butyrate_dca_group == "Butyrate ↓ DCA ↓" | butyrate_dca_group == "Butyrate ↑ DCA ↑") |> 
+  mutate(target_var = ifelse(butyrate_dca_group == "Butyrate ↑ DCA ↑", 1, 0)) |> 
+  mutate(target_var = butyrate_dca_group)
+
+X = df_mp_micu %>% 
+  filter(seq_id %in% df_meta_ml$seq_id) %>%
+  select(seq_id, species_mp, pctseqs) %>%
+  group_by(seq_id, species_mp) %>% 
+  summarize(pctseqs = sum(pctseqs)) %>% 
+  ungroup() %>% 
+  pivot_wider(id_cols = seq_id, names_from = species_mp, values_from = pctseqs, values_fill = 0) %>% 
+  column_to_rownames("seq_id") %>% 
+  as.matrix()
+
+
+df_meta_ml = df_meta_ml |> 
+  filter(seq_id %in% rownames(X))
+
+X = X[df_meta_ml$seq_id,]
+
+
+Y = df_meta_ml[[target_var]]
+cols = colnames(X)
+rows = rownames(X)
+
+
+```
+
+```{python}
+
+X = pd.DataFrame(r.X)
+y = np.array(r.Y)
+
+X.columns = r.cols
+X.index = r.rows
+
+
+```
+
+```{python}
+
+
+n_repeats = 2
+n_splits = 5
+seed_value = 333
+test_proportion = 0.2
+pos_label = 'Butyrate ↑ DCA ↑'
+
+X, pca, _ = pca_transform(X, n_components=None, variance_threshold=0.95)
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size = test_proportion, random_state = seed_value, stratify=y)
+cv = RepeatedStratifiedKFold(n_splits = n_splits, n_repeats = n_repeats, random_state = seed_value)
+
+
+```
+
+```{python}
+
+
+model = LogisticRegression(max_iter=10000)
+
+param_grid = [    
+    {'penalty': [None],
+     'solver': ['lbfgs', 'newton-cg', 'sag', 'saga']},
+    {'penalty': ['l2'],
+     'C': [0.001, 0.01, 0.1, 1, 10, 100, 1000],
+     'solver': ['lbfgs', 'newton-cg', 'sag', 'saga']},
+    {'penalty': ['l1'],
+     'C': [0.001, 0.01, 0.1, 1, 10, 100, 1000],
+     'solver': ['liblinear', 'saga']},
+    {'penalty': ['elasticnet'],
+     'C': [0.001, 0.01, 0.1, 1, 10, 100, 1000],
+     'solver': ['saga'],
+     'l1_ratio': [0.25, 0.5, 0.75]}
+]
+
+classifier_tune = GridSearchCV(model, param_grid=param_grid, cv=cv, verbose=1, n_jobs=-1, 
+                               scoring=['accuracy', 'roc_auc'], refit='roc_auc')
+
+best = classifier_tune.fit(X_train, y_train)
+results = pd.DataFrame(best.cv_results_)
+best_estimator = best.best_estimator_
+print(f'Best parameters: {best.best_params_}')
+
+# Make predictions on the test set
+y_pred = best.predict(X_test)
+y_pred_proba = best.predict_proba(X_test)[:, 1]
+
+# Calculate ROC AUC
+roc_auc = roc_auc_score(y_test, y_pred_proba)
+print(f'ROC AUC: {roc_auc:.3f}')
+
+# Calculate Accuracy
+accuracy = accuracy_score(y_test, y_pred)
+print(f'Accuracy: {accuracy:.3f}')
+
+
+
+```
+
+```{python}
+
+
+df_roc_log, auc_scores_log = calculate_roc_curves(best_estimator, X_train, y_train, X_test, y_test,
+                                                  pos_label='Butyrate ↑ DCA ↑',
+                                                  n_repeats=n_repeats, n_splits=n_splits)
+
+
+```
+
+```{r}
+
+cairo_pdf(here("outputs", paste0("Fig7B_", format(Sys.Date(), "%Y%m%d"), ".pdf")), onefile = T, height=6, width=8)
+function_plot_roc(py$df_roc_log, py$auc_scores_log, title = "Ridge Regression with PCA - MICU Cohort")
+dev.off()
+
+```
+
+```{python}
+
+df_importance_log = pca_logistic_feature_importance(X_train, y_train, X_test, y_test, 
+                                                pca, list(r.cols), best_estimator, pos_label=pos_label)
+
+
+```
+
+```{r fig.height=6, fig.width=7}
+
+selected_features = py$df_importance_log |> 
+  mutate(imp_abs = abs(importance)) |>
+  filter(type == 'Train') |> 
+  group_by(direction) |> 
+  slice_max(imp_abs, n = 20, with_ties = F) |> 
+  arrange(importance) |> 
+  pull(feature)
+  
+  
+p = py$df_importance_log |> 
+  filter(feature %in% selected_features) |> 
+  arrange(importance) |> 
+  mutate(feature = factor(feature, levels = selected_features)) |>  
+  ggplot(aes(x = feature, y = importance, fill = type)) +
+  geom_col(position = position_dodge2(preserve = 'single')) +
+  scale_fill_manual(values = c("Train" = "darkblue", "Test" = "darkgreen")) +
+  scale_x_discrete(guide = guide_axis(angle = 60)) +
+  theme_bw() +
+  labs(x = '', y = 'Importance', fill = '')
+
+p
+```
+
+```{r}
+
+cairo_pdf(here("outputs", paste0("Fig7C_", format(Sys.Date(), "%Y%m%d"), ".pdf")), onefile = T, height=10, width=10)
+p
+dev.off()
+
+```
