@@ -30,21 +30,17 @@ dat <- df_meta |>
                                     days_to_death_transplant,
                                     30),
          time2event_30day = if_else(is.na(time2event_30day), 30, time2event_30day),
-         time2event_30day = if_else(time2event_30day ==0, 0.5, time2event_30day),
-         meld_na = case_when(
-           meld_na_labs > 40 ~ 40,
-           meld_na_labs < 6 ~ 6,
-           TRUE ~ meld_na_labs) )
+         time2event_30day = if_else(time2event_30day ==0, 0.5, time2event_30day))
 
 
 ## metagenomics ------------------------------------------------------------
 
 mpa_plt <- df_mp %>%
   filter(!is.na(taxid),
-         seq_id %in% dat$seq_id) 
-
-mpa_plt |> 
-  count(seq_id)
+         seq_id %in% dat$seq_id,
+         Species != "") |> 
+  add_count(seq_id, wt = pctseqs, name = "total") |> 
+  mutate(pctseqs = pctseqs/total)
 
 mpa_mat <- mpa_plt |> 
   select(seq_id, Species, pctseqs) |> 
