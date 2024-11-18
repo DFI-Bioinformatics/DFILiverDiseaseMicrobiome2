@@ -23,7 +23,6 @@ df_mp <- readRDS("data/first_mp.rds")
 ## organize data before modeling --------------------------------------------
 
 dat <- df_meta |> 
-  distinct() |> 
   filter(disease_stage != "Healthy") |> 
   mutate(event_30day = as.numeric(death_transplant_30d),
          time2event_30day = if_else(days_to_death_transplant < 30, 
@@ -31,7 +30,6 @@ dat <- df_meta |>
                                     30),
          time2event_30day = if_else(is.na(time2event_30day), 30, time2event_30day),
          time2event_30day = if_else(time2event_30day ==0, 0.5, time2event_30day))
-
 
 ## metagenomics ------------------------------------------------------------
 
@@ -126,6 +124,7 @@ names(ori_names) <- colnames(metab.mat)
 
 
 ## modeling ----------------------------------------------------------------
+set.seed(897253)
 
 mpa_sv_fit_full <- orsf(data = metab.mat,
                         n_tree = 500, 
