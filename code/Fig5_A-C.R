@@ -14,7 +14,9 @@ conflicts_prefer(dplyr::select)
 
 # load data ---------------------------------------------------------------
 
-load("data/first_collated-data_20241105.RData")
+df_meta <- readRDS("data/first_meta.rds")
+df_quant <- readRDS("data/first_metabolomics_quant.rds")
+df_mp <- readRDS("data/first_mp.rds")
 
 # B: The top 30 negation important features for RSF model -------------------
 
@@ -33,6 +35,9 @@ dat <- df_meta |>
            meld_na_labs > 40 ~ 40,
            meld_na_labs < 6 ~ 6,
            TRUE ~ meld_na_labs) )
+
+
+## metagenomics ------------------------------------------------------------
 
 mpa_plt <- df_mp %>%
   filter(!is.na(taxid),
